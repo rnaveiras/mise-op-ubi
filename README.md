@@ -1,328 +1,365 @@
-# mise backend plugin template
+# mise-op-ubi
 
-This is a GitHub template for building a mise backend plugin using the vfox-style backend architecture.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub release](https://img.shields.io/github/v/release/rnaveiras/mise-op-ubi)](https://github.com/rnaveiras/mise-op-ubi/releases)
 
-## What are Backend Plugins?
+A [mise](https://github.com/jdx/mise) backend plugin that securely integrates 1Password CLI for credential management with [ubi](https://github.com/houseabsolute/ubi) for installing tools from private GitHub repositories.
 
-Backend plugins in mise extend the standard tool plugin system to manage **multiple tools** using the `plugin:tool` format. They're perfect for:
+## The Problem
 
-- **Package managers** (npm, pip, cargo, gem)
-- **Tool families** (multiple related tools from one ecosystem) 
-- **Custom installations** that need to manage many tools
+When using mise's built-in `ubi` backend with private GitHub repositories, you must export `GITHUB_TOKEN` permanently in your shell environment. This creates security concerns:
 
-Unlike tool plugins that manage one tool, backend plugins can install and manage multiple tools like `npm:prettier`, `npm:eslint`, `cargo:ripgrep`, etc.
+- **Token exposure**: The token lives in your shell environment indefinitely
+- **Accidental leakage**: Easy to forget it's exported and accidentally commit it or share it
+- **No rotation**: Changing tokens requires updating multiple shell configurations
 
-## Using this template
+## The Solution
 
-### Option 1: Use GitHub's template feature (recommended)
-1. Click "Use this template" button on GitHub
-2. Name your repository (e.g., `mise-mybackend` or `vfox-mybackend`)
-3. Clone your new repository
-4. Follow the setup instructions below
+**mise-op-ubi** provides a more secure alternative:
 
-### Option 2: Clone and modify
+✅ **On-demand credential retrieval**: GitHub tokens are fetched from 1Password CLI only when needed
+
+✅ **Smart caching**: Version lists cached for 7 days (configurable) to minimize overhead
+
+✅ **No persistent tokens**: Credentials never live in your shell environment permanently
+
+✅ **Delegates to ubi**: Uses ubi's proven release asset detection - no reimplementation needed
+
+✅ **Minimal performance impact**: ~1 second overhead only on cache misses; instant on cache hits
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  User: mise install op-ubi:company/tool@1.2.3              │
+└─────────────────────────────────────────────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────┐
+         │  Check version cache           │
+         │  (7-day TTL by default)        │
+         └────────────────────────────────┘
+                          │
+                ┌─────────┴─────────┐
+                │                   │
+           Cache HIT           Cache MISS
+                │                   │
+                │                   ▼
+                │         ┌──────────────────────┐
+                │         │  Retrieve token from │
+                │         │  1Password CLI (~1s) │
+                │         └──────────────────────┘
+                │                   │
+                │                   ▼
+                │         ┌──────────────────────┐
+                │         │  Query GitHub API    │
+                │         │  for releases        │
+                │         └──────────────────────┘
+                │                   │
+                │                   ▼
+                │         ┌──────────────────────┐
+                │         │  Cache version list  │
+                │         │  for 7 days          │
+                │         └──────────────────────┘
+                │                   │
+                └─────────┬─────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────┐
+         │  Install via ubi               │
+         │  (with token in subprocess)    │
+         └────────────────────────────────┘
+                          │
+                          ▼
+         ┌────────────────────────────────┐
+         │  Tool installed & ready to use │
+         └────────────────────────────────┘
+```
+
+## Prerequisites
+
+1. **[mise](https://mise.jdx.dev/)** - The plugin manager itself
+2. **[1Password CLI](https://developer.1password.com/docs/cli/)** (`op`) - For credential management
+
+   ```bash
+   mise install ubi:1Password/op
+   ```
+
+3. **[ubi](https://github.com/houseabsolute/ubi)** - Universal Binary Installer
+
+   ```bash
+   mise install ubi:houseabsolute/ubi
+   ```
+
+4. **GitHub token** stored in 1Password (see [Setup](#setup) below)
+
+## Installation
+
+### Option 1: Install from GitHub
+
 ```bash
-git clone https://github.com/jdx/mise-backend-plugin-template mise-mybackend
-cd mise-mybackend
-rm -rf .git
-git init
+mise plugin install op-ubi https://github.com/rnaveiras/mise-op-ubi.git
 ```
 
-## Setup Instructions
+### Option 2: Local Development
 
-### 1. Replace placeholders
-
-Search and replace these placeholders throughout the project:
-- `<BACKEND>` → your backend name (e.g., `npm`, `cargo`, `pip`)
-- `<GITHUB_USER>` → your GitHub username or organization  
-- `<TEST_TOOL>` → a real tool name your backend can install (for testing)
-
-Files to update:
-- `metadata.lua` - Update name, description, author, homepage
-- `hooks/*.lua` - Replace placeholders and implement your backend logic
-- `mise-tasks/test` - Update test tool name and commands
-- `README.md` - Update this file with your backend's information
-
-### 2. Implement the backend hooks
-
-Backend plugins require three main hooks:
-
-#### `hooks/backend_list_versions.lua`
-Lists available versions for a tool in your backend.
-
-```lua
-function PLUGIN:BackendListVersions(ctx)
-    local tool = ctx.tool
-    -- Your logic to fetch versions for the tool
-    -- Return: {versions = {"1.0.0", "1.1.0", "2.0.0"}}
-end
-```
-
-**Examples**:
-- **API-based**: Query npm registry, PyPI, crates.io APIs
-- **Command-based**: Run `npm view <tool> versions`, `pip index versions <tool>`
-- **File-based**: Parse registry files or manifests
-
-#### `hooks/backend_install.lua` 
-Installs a specific version of a tool.
-
-```lua
-function PLUGIN:BackendInstall(ctx)
-    local tool = ctx.tool
-    local version = ctx.version  
-    local install_path = ctx.install_path
-    -- Your logic to install the tool
-    -- Return: {}
-end
-```
-
-**Examples**:
-- **Package manager**: `npm install <tool>@<version>`, `pip install <tool>==<version>`
-- **Download & extract**: Download binary/archive and extract to install_path
-- **Build from source**: Clone repository, checkout version, build and install
-
-#### `hooks/backend_exec_env.lua`
-Sets up environment variables for a tool.
-
-```lua
-function PLUGIN:BackendExecEnv(ctx)
-    local install_path = ctx.install_path
-    -- Your logic to set up environment
-    -- Return: {env_vars = {{key = "PATH", value = install_path .. "/bin"}}}
-end
-```
-
-**Examples**:
-- **Basic**: Add `bin/` directory to PATH
-- **Complex**: Set tool-specific environment variables, library paths
-- **Ecosystem-specific**: Like `node_modules/.bin` for npm, site-packages for Python
-
-### 3. Platform considerations
-
-Your backend may need to handle different operating systems:
-
-```lua
--- Available in all hooks via RUNTIME object
-if RUNTIME.osType == "Darwin" then
-    -- macOS-specific logic
-elseif RUNTIME.osType == "Linux" then  
-    -- Linux-specific logic
-elseif RUNTIME.osType == "Windows" then
-    -- Windows-specific logic
-end
-```
-
-### 4. Error handling
-
-Provide meaningful error messages:
-
-```lua
-function PLUGIN:BackendListVersions(ctx)
-    local tool = ctx.tool
-    
-    if not tool or tool == "" then
-        error("Tool name cannot be empty")
-    end
-    
-    -- ... your implementation ...
-    
-    if #versions == 0 then
-        error("No versions found for " .. tool)
-    end
-    
-    return {versions = versions}
-end
-```
-
-## Development Workflow
-
-### Setting up development environment
-
-1. Install pre-commit hooks (optional but recommended):
 ```bash
-hk install
+git clone https://github.com/rnaveiras/mise-op-ubi.git
+cd mise-op-ubi
+mise plugin link op-ubi "$(pwd)"
 ```
 
-This sets up automatic linting and formatting on git commits.
+## Setup
 
-### Local Testing
+### 1. Store GitHub Token in 1Password
 
-1. Link your plugin for development:
+Create a GitHub personal access token with `repo` scope for private repository access:
+
+1. Go to GitHub → Settings → Developer settings → Personal access tokens
+2. Create new token (classic) with `repo` scope
+3. Copy the generated token
+4. Store in 1Password:
+   - Create an item (e.g., "GitHub CLI" or "GitHub Private Repos")
+   - Add a field named `token` with your GitHub token
+   - Note the vault name (e.g., "Private")
+
+### 2. Authenticate 1Password CLI
+
 ```bash
-mise plugin link --force <BACKEND> .
+# Sign in with 1Password desktop app integration
+op signin
 ```
 
-2. Test version listing:
+### 3. Configure the Plugin
+
+Set the 1Password reference path (format: `op://VaultName/ItemName/FieldName`):
+
 ```bash
-mise ls-remote <BACKEND>:<some-tool>
+# In your shell profile (~/.zshrc, ~/.bashrc, etc.)
+export MISE_OP_UBI_GITHUB_TOKEN_REFERENCE="op://Private/GitHub-CLI/token"
 ```
 
-3. Test installation:
+Or in your mise configuration:
+
+```toml
+# ~/.config/mise/config.toml or .mise.toml
+[env]
+MISE_OP_UBI_GITHUB_TOKEN_REFERENCE = "op://Private/GitHub-CLI/token"
+```
+
+### 4. Install Tools from Private Repositories
+
+```toml
+# .mise.toml
+[tools]
+"op-ubi:yourcompany/private-cli" = "1.2.3"
+"op-ubi:yourcompany/deploy-tool" = "latest"
+```
+
 ```bash
-mise install <BACKEND>:<some-tool>@latest
+mise install
 ```
 
-4. Test execution:
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MISE_OP_UBI_GITHUB_TOKEN_REFERENCE` | `op://Private/GitHub-CLI/token` | 1Password reference path for GitHub token |
+| `MISE_OP_UBI_CACHE_DAYS` | `7` | Number of days to cache version lists |
+| `MISE_OP_UBI_FORCE_REFRESH` | `false` | Force cache refresh (bypass cache) |
+| `MISE_OP_UBI_ACCOUNT` | - | Plugin-specific 1Password account name (overrides `OP_ACCOUNT`) |
+| `OP_ACCOUNT` | - | 1Password account name (for users with multiple accounts) |
+
+### Tool Specification Format
+
+```
+op-ubi:<owner>/<repo>@<version>
+```
+
+**Examples:**
+
+- `op-ubi:yourcompany/cli@1.2.3` - Install exact version 1.2.3
+- `op-ubi:yourcompany/cli@latest` - Install latest version
+- `op-ubi:yourcompany/cli@1.2` - Install latest 1.2.x version
+
+## Usage Examples
+
+### Basic Tool Installation
+
+```toml
+# .mise.toml
+[tools]
+"op-ubi:mycompany/internal-cli" = "1.2.3"
+```
+
 ```bash
-mise exec <BACKEND>:<some-tool>@latest -- <some-tool> --version
+mise install
+internal-cli --version
 ```
 
-5. Run tests:
+### Multiple Tools with Custom Configuration
+
+```toml
+# .mise.toml
+[tools]
+"op-ubi:company/api-cli" = "2.1.5"
+"op-ubi:company/deploy-tool" = "latest"
+"op-ubi:company/dev-utils" = "0.5.0"
+
+[env]
+MISE_OP_UBI_GITHUB_TOKEN_REFERENCE = "op://Production/GitHub/deploy-token"
+MISE_OP_UBI_CACHE_DAYS = "14"  # Cache for 2 weeks
+```
+
+### Force Cache Refresh
+
 ```bash
-mise run test
+# When you need to check for new versions immediately
+MISE_OP_UBI_FORCE_REFRESH=true mise install op-ubi:company/tool@latest
 ```
 
-6. Run linting:
+## Performance Characteristics
+
+### First Installation (Cold Cache)
+
+- **Duration**: ~2-3 seconds
+- **Operations**: 1Password CLI (~1s) + GitHub API (~500ms) + ubi download/install
+- **Cache**: Version list stored for 7 days
+
+### Subsequent Operations (Warm Cache)
+
+- **Duration**: ~100ms
+- **Operations**: Cache read only, no external calls
+- **Overhead**: Near zero
+
+### Version Bump (Smart Invalidation)
+
+- **Duration**: ~2-3 seconds
+- **Operations**: Detects missing version in cache, auto-refreshes
+- **Behavior**: Transparent to user
+
+**Result**: For typical workflows with monthly releases and explicit versions, you experience the 1-second overhead approximately once per week per tool.
+
+## Security Model
+
+### What Gets Cached (Disk)
+
+✅ Version lists (public information from GitHub releases)
+
+✅ Timestamps for cache freshness checks
+
+### What Never Gets Cached
+
+❌ GitHub personal access tokens
+
+❌ 1Password credentials
+
+❌ Any authentication material
+
+### Credential Lifecycle
+
+1. User operation triggers version check or installation
+2. Plugin calls `op read "op://path"` (1Password CLI)
+3. Token retrieved from 1Password's encrypted storage
+4. Token stored temporarily in process memory
+5. Token passed to subprocess (curl or ubi) via environment
+6. Subprocess completes, token destroyed with process
+7. **No trace of token remains on disk**
+
+### Trust Boundaries
+
+- **1Password CLI**: Trusted for secure credential storage
+- **Plugin code**: Trusted to handle credentials properly (open source, auditable)
+- **ubi CLI**: Receives token via environment, uses for GitHub API
+- **GitHub API**: Receives token for authentication
+- **File system**: Only stores version lists (public data), never credentials
+
+## Troubleshooting
+
+### Error: "1Password CLI not authenticated"
+
+**Cause**: 1Password CLI is not signed in.
+
+**Solution**:
+
 ```bash
-mise run lint
+# Sign in with 1Password desktop app integration
+op signin
 ```
 
-7. Run full CI suite:
+### Error: "Failed to retrieve GitHub token from 1Password"
+
+**Cause**: The token reference path doesn't exist or is incorrect.
+
+**Solution**:
+
 ```bash
-mise run ci
+# Verify the path works
+op read "op://Private/GitHub-CLI/token"
+
+# If wrong, update the environment variable
+export MISE_OP_UBI_GITHUB_TOKEN_REFERENCE="op://YourVault/YourItem/token"
 ```
 
-### Code Quality
+### Error: "ubi CLI not found in PATH"
 
-This template uses [hk](https://hk.jdx.dev) for modern linting and pre-commit hooks:
+**Cause**: ubi is not installed.
 
-- **Automatic formatting**: `stylua` formats Lua code
-- **Static analysis**: `luacheck` catches Lua issues  
-- **GitHub Actions linting**: `actionlint` validates workflows
-- **Pre-commit hooks**: Runs all checks automatically on git commit
+**Solution**:
 
-Manual commands:
 ```bash
-hk check      # Run all linters (same as mise run lint)
-hk fix        # Run linters and auto-fix issues
+mise install ubi:houseabsolute/ubi
+mise reshim
 ```
 
-### Debugging
+### Slow Performance on Every Command
 
-Enable debug output:
+**Symptom**: Every mise operation takes 1+ seconds.
+
+**Cause**: Cache is not working properly.
+
+**Debug**:
+
 ```bash
-mise --debug install <BACKEND>:<tool>@<version>
+# Check cache directory exists
+ls -lah ~/.cache/mise/op-ubi/
+
+# Enable debug logging
+export MISE_DEBUG=1
+mise install op-ubi:owner/repo@version
 ```
 
-## Files
+### Multiple 1Password Accounts
 
-- `metadata.lua` – Backend plugin metadata and configuration
-- `hooks/backend_list_versions.lua` – Lists available versions for tools
-- `hooks/backend_install.lua` – Installs specific versions of tools
-- `hooks/backend_exec_env.lua` – Sets up environment variables for tools
-- `.github/workflows/ci.yml` – GitHub Actions CI/CD pipeline
-- `mise.toml` – Development tools and configuration
-- `mise-tasks/` – Task scripts for testing
-- `hk.pkl` – Modern linting and pre-commit hook configuration
-- `.luacheckrc` – Lua linting configuration
-- `stylua.toml` – Lua formatting configuration
+**Issue**: You have multiple 1Password accounts and the CLI is using the wrong one.
 
-## Backend Examples
+**Solution**:
 
-### Package Manager Backend (npm-style)
-```lua
--- backend_list_versions.lua
-function PLUGIN:BackendListVersions(ctx)
-    local cmd = require("cmd")
-    local json = require("json")
-    local result = cmd.exec("mypm view " .. ctx.tool .. " versions --json")
-    return {versions = json.decode(result)}
-end
+```bash
+# Specify which account to use
+export OP_ACCOUNT="work-account"
 
--- backend_install.lua  
-function PLUGIN:BackendInstall(ctx)
-    local cmd = require("cmd")
-    cmd.exec("mypm install " .. ctx.tool .. "@" .. ctx.version .. " --prefix " .. ctx.install_path)
-    return {}
-end
-
--- backend_exec_env.lua
-function PLUGIN:BackendExecEnv(ctx)
-    return {
-        env_vars = {
-            {key = "PATH", value = ctx.install_path .. "/bin"}
-        }
-    }
-end
+# Or use plugin-specific setting
+export MISE_OP_UBI_ACCOUNT="work-account"
 ```
 
-### Binary Download Backend (GitHub releases-style)
-```lua
--- backend_list_versions.lua
-function PLUGIN:BackendListVersions(ctx)
-    local http = require("http")
-    local json = require("json")
-    local resp = http.get({url = "https://api.github.com/repos/owner/" .. ctx.tool .. "/releases"})
-    local releases = json.decode(resp.body)
-    local versions = {}
-    for _, release in ipairs(releases) do
-        table.insert(versions, release.tag_name:gsub("^v", ""))
-    end
-    return {versions = versions}
-end
+## Development
 
--- backend_install.lua
-function PLUGIN:BackendInstall(ctx)
-    local platform = RUNTIME.osType:lower()
-    local arch = RUNTIME.archType
-    local url = "https://github.com/owner/" .. ctx.tool .. "/releases/download/v" .. ctx.version .. 
-                "/" .. ctx.tool .. "-" .. platform .. "-" .. arch .. ".tar.gz"
-    
-    local http = require("http")
-    local temp_file = ctx.install_path .. "/tool.tar.gz"
-    http.download({url = url, output = temp_file})
-    
-    local cmd = require("cmd")
-    cmd.exec("cd " .. ctx.install_path .. " && tar -xzf tool.tar.gz")
-    cmd.exec("rm " .. temp_file)
-    return {}
-end
+### Running Tests
+
+```bash
+cd mise-op-ubi
+mise test
 ```
 
-## Real-World Examples
+## Acknowledgments
 
-- [vfox-npm](https://github.com/jdx/vfox-npm) - Backend for npm packages
-- Study existing mise backends: npm, cargo, pip, gem
+- Built on [mise](https://github.com/jdx/mise) by [@jdx](https://github.com/jdx)
+- Uses [ubi](https://github.com/houseabsolute/ubi) by [@houseabsolute](https://github.com/houseabsolute)
+- Integrates with [1Password CLI](https://developer.1password.com/docs/cli/) by [1Password](https://1password.com)
 
-## Context Variables Reference
+---
 
-### BackendListVersions Context
-| Variable | Type | Description | Example |
-|----------|------|-------------|---------|
-| `ctx.tool` | string | Tool name | `"prettier"` |
-
-### BackendInstall and BackendExecEnv Context  
-| Variable | Type | Description | Example |
-|----------|------|-------------|---------|
-| `ctx.tool` | string | Tool name | `"prettier"` |
-| `ctx.version` | string | Tool version | `"3.0.0"` |
-| `ctx.install_path` | string | Installation directory | `"/home/user/.local/share/mise/installs/npm/prettier/3.0.0"` |
-
-### Available Lua Modules
-
-Backend plugins have access to these built-in modules:
-
-- `cmd` - Execute shell commands
-- `http` - HTTP client for downloads and API calls  
-- `json` - JSON parsing and encoding
-- `file` - File system operations
-
-## Publishing
-
-1. Ensure all tests pass: `mise run ci`
-2. Create a GitHub repository for your plugin
-3. Push your code
-4. Test with: `mise plugin install mybackend https://github.com/user/mise-mybackend`
-5. (Optional) Request to transfer to [mise-plugins](https://github.com/mise-plugins) organization
-6. Add to the [mise registry](https://github.com/jdx/mise/blob/main/registry.toml) via PR
-
-## Documentation
-
-- [Backend Plugin Development](https://mise.jdx.dev/backend-plugin-development.html) - Complete guide
-- [Backend Architecture](https://mise.jdx.dev/dev-tools/backend_architecture.html) - How backends work
-- [Lua modules reference](https://mise.jdx.dev/plugin-lua-modules.html) - Available modules
-- [mise-plugins organization](https://github.com/mise-plugins) - Community plugins
-
-## License
-
-MIT
+**Note**: This plugin is designed for secure credential management in local development environments. The credential retrieval overhead (~1 second) is intentional and traded for security benefits.

@@ -1,85 +1,100 @@
 -- hooks/backend_list_versions.lua
--- Lists available versions for a tool in this backend
+-- Backend hook for listing available versions with intelligent caching
 -- Documentation: https://mise.jdx.dev/backend-plugin-development.html#backendlistversions
 
+-- This hook is called when mise needs to know what versions are available
+-- for a tool. It's triggered by commands like:
+-- - mise install (to validate the requested version exists)
+-- - mise outdated (to check for newer versions)
+-- - mise ls-remote (to show all available versions)
+-- - mise install tool@latest (to resolve what "latest" means)
+
 function PLUGIN:BackendListVersions(ctx)
-    local tool = ctx.tool
+    -- Load required modules
+    local cache = require("lib.cache")
+    local credentials = require("lib.credentials")
+    local github = require("lib.github")
 
-    -- Validate tool name
-    if not tool or tool == "" then
-        error("Tool name cannot be empty")
+    -- extract repository name from tool identifier
+    -- NOTE: mise strips the backend prefix before calling this hook
+    -- So ctx.tool is just "owner/repo", not "op-ubi:owner/repo"
+    local repo = ctx.tool
+
+    -- Validate it looks like a GitHub repository path
+    if not repo:match("^[^/]+/[^/]+$") then
+        error("nnvalid tool format. expected 'owner/repo', got: " .. ctx.tool)
     end
 
-    -- Example implementations (choose/modify based on your backend):
+    -- get cache configuration
+    local cache_days = self:get_config("cache_days")
+    local force_refresh = self:get_config("force_refresh")
 
-    -- Example 1: API-based version listing (like npm, pip, cargo)
-    local http = require("http")
-    local json = require("json")
+    -- set up cache file paths
+    local cache_file = cache.get_cache_path(repo, "versions.json")
+    local timestamp_file = cache.get_cache_path(repo, "timestamp")
 
-    -- Replace with your backend's API endpoint
-    local api_url = "https://api.<BACKEND>.org/packages/" .. tool .. "/versions"
-
-    local resp, err = http.get({
-        url = api_url,
-        -- headers = { ["Authorization"] = "Bearer " .. token } -- if needed
-    })
-
-    if err then
-        error("Failed to fetch versions for " .. tool .. ": " .. err)
+    -- check if we should bypass cache (force refresh requested)
+    if force_refresh then
+        cache.invalidate(repo)
     end
 
-    if resp.status_code ~= 200 then
-        error("API returned status " .. resp.status_code .. " for " .. tool)
+    -- Try to use cached data if available and fresh
+    local cache_is_fresh = cache.is_fresh(timestamp_file, cache_days)
+    local cached_versions = nil
+
+    if cache_is_fresh then
+        cached_versions = cache.read_json(cache_file)
     end
 
-    local data = json.decode(resp.body)
-    local versions = {}
+    -- determine if we have a specific version requirement
+    -- This happens when someone specifies an exact version in their mise.toml
+    -- For example: "op-ubi:owner/repo" = "1.2.3"
+    -- The ctx may contain version info in some scenarios
+    local required_version = ctx.version or os.getenv("MISE_TOOL_VERSION")
 
-    -- Parse versions from API response (adjust based on your API structure)
-    if data.versions then
-        for _, version in ipairs(data.versions) do
-            table.insert(versions, version)
+    -- smart cache validation logic:
+    -- If we have cached versions AND we have a specific version requirement,
+    -- check if that version exists in the cache
+    if cached_versions and required_version then
+        -- check if the required version is in our cached list
+        if github.version_exists(cached_versions, required_version) then
+            -- cache hit - return cached data without any API calls
+            -- this is the fast path that avoids 1Password CLI overhead
+            return { versions = cached_versions }
+        else
+            -- cache miss - the required version isn't in our cache
+            -- this can happen when:
+            -- 1. A new version was just released and cache is stale
+            -- 2. Someone specified a version that doesn't exist (will fail later)
+            -- need to fetch fresh data, which will trigger credential retrieval
+            cached_versions = nil -- force refresh
         end
     end
 
-    -- Example 2: Command-line based version listing
-    --[[
-    local cmd = require("cmd")
-
-    -- Replace with your backend's command to list versions
-    local command = "<BACKEND> search " .. tool .. " --versions"
-    local result = cmd.exec(command)
-
-    if not result or result:match("error") then
-        error("Failed to fetch versions for " .. tool)
+    -- if we have cached versions and no specific requirement (e.g., using "latest")
+    -- we can still use the cache even if it might not include the absolute latest
+    -- this is acceptable because our cache window is reasonable (7 days by default)
+    if cached_versions and not required_version then
+        return { versions = cached_versions }
     end
 
-    local versions = {}
-    -- Parse command output to extract versions
-    for version in result:gmatch("[%d%.]+[%w%-]*") do
-        table.insert(versions, version)
-    end
-    --]]
+    -- cache miss or invalidated - need to fetch fresh data from GitHub
+    -- This is where we incur the 1-second overhead from 1Password CLI
 
-    -- Example 3: Registry file parsing
-    --[[
-    local file = require("file")
+    -- retrieve GitHub token from 1Password
+    -- NOTE: is the slow operation (~1 second)
+    local github_token = credentials.get_github_token_safe()
 
-    -- Replace with path to your backend's registry or manifest
-    local registry_path = "/path/to/<BACKEND>/registry/" .. tool .. ".json"
+    -- query GitHub API for releases
+    -- This uses the token we just retrieved
+    local versions = github.get_versions(repo, github_token)
 
-    if not file.exists(registry_path) then
-        error("Tool " .. tool .. " not found in registry")
-    end
+    -- cache the results for future use
+    -- this benefits all subsequent operations within the cache window
+    cache.write_json(cache_file, versions)
+    cache.write_timestamp(timestamp_file)
 
-    local content = file.read(registry_path)
-    local data = json.decode(content)
-    local versions = data.versions or {}
-    --]]
-
-    if #versions == 0 then
-        error("No versions found for " .. tool)
-    end
-
+    -- return the version list to mise
+    -- mise will use this to validate the requested version exists
     return { versions = versions }
 end

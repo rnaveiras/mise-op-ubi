@@ -1,103 +1,82 @@
 -- hooks/backend_install.lua
--- Installs a specific version of a tool
+-- Backend hook for installing tools via ubi with credentials from 1Password
 -- Documentation: https://mise.jdx.dev/backend-plugin-development.html#backendinstall
 
+-- This hook is called when mise needs to actually install a tool version
+-- It's triggered by commands like:
+-- - mise install (if the tool/version isn't already installed)
+-- - mise use (if auto-install is enabled)
+
 function PLUGIN:BackendInstall(ctx)
-    local tool = ctx.tool
-    local version = ctx.version
-    local install_path = ctx.install_path
-
-    -- Validate inputs
-    if not tool or tool == "" then
-        error("Tool name cannot be empty")
-    end
-    if not version or version == "" then
-        error("Version cannot be empty")
-    end
-    if not install_path or install_path == "" then
-        error("Install path cannot be empty")
-    end
-
-    -- Create installation directory
+    -- Load required modules
     local cmd = require("cmd")
-    cmd.exec("mkdir -p " .. install_path)
-
-    -- Example implementations (choose/modify based on your backend):
-
-    -- Example 1: Package manager installation (like npm, pip)
-    local install_cmd = "<BACKEND> install " .. tool .. "@" .. version .. " --target " .. install_path
-    local result = cmd.exec(install_cmd)
-
-    if result:match("error") or result:match("failed") then
-        error("Failed to install " .. tool .. "@" .. version .. ": " .. result)
-    end
-
-    -- Example 2: Download and extract from URL
-    --[[
-    local http = require("http")
     local file = require("file")
+    local credentials = require("lib.credentials")
+    local installer = require("lib.installer")
 
-    -- Construct download URL (adjust based on your backend's URL pattern)
-    local platform = RUNTIME.osType:lower()
-    local arch = RUNTIME.archType
-    local download_url = "https://releases.<BACKEND>.org/" .. tool .. "/" .. version .. "/" .. tool .. "-" .. platform .. "-" .. arch .. ".tar.gz"
+    -- extract repository name from tool identifier
+    -- NOTE: mise strips the backend prefix before calling this hook
+    -- So ctx.tool is just "owner/repo", not "op-ubi:owner/repo"
+    local repo = ctx.tool
 
-    -- Download the tool
-    local temp_file = install_path .. "/" .. tool .. ".tar.gz"
-    local resp, err = http.download({
-        url = download_url,
-        output = temp_file
-    })
-
-    if err then
-        error("Failed to download " .. tool .. "@" .. version .. ": " .. err)
+    -- validate it looks like a GitHub repository path
+    if not repo:match("^[^/]+/[^/]+$") then
+        error("Invalid tool format. Expected 'owner/repo', got: " .. ctx.tool)
     end
 
-    -- Extract the archive
-    cmd.exec("cd " .. install_path .. " && tar -xzf " .. temp_file)
-    cmd.exec("rm " .. temp_file)
-
-    -- Set executable permissions
-    cmd.exec("chmod +x " .. install_path .. "/bin/" .. tool)
-    --]]
-
-    -- Example 3: Build from source
-    --[[
-    local git_url = "https://github.com/owner/" .. tool .. ".git"
-
-    -- Clone the repository
-    cmd.exec("git clone " .. git_url .. " " .. install_path .. "/src")
-    cmd.exec("cd " .. install_path .. "/src && git checkout " .. version)
-
-    -- Build the tool (adjust based on build system)
-    local build_result = cmd.exec("cd " .. install_path .. "/src && make install PREFIX=" .. install_path)
-
-    if build_result:match("error") then
-        error("Failed to build " .. tool .. "@" .. version)
+    -- validate we have a version to install
+    if not ctx.version then
+        error("No version specified for installation")
     end
 
-    -- Clean up source
-    cmd.exec("rm -rf " .. install_path .. "/src")
-    --]]
+    -- Check if ubi CLI is available in PATH
+    -- ubi is required for the actual installation logic
+    local ubi_available = pcall(function()
+        cmd.exec("which ubi > /dev/null 2>&1")
+    end)
 
-    -- Platform-specific installation logic
-    --[[
-    if RUNTIME.osType == "Darwin" then
-        -- macOS-specific installation
-        local macos_cmd = "<BACKEND> install-macos " .. tool .. "@" .. version .. " " .. install_path
-        cmd.exec(macos_cmd)
-    elseif RUNTIME.osType == "Linux" then
-        -- Linux-specific installation
-        local linux_cmd = "<BACKEND> install-linux " .. tool .. "@" .. version .. " " .. install_path
-        cmd.exec(linux_cmd)
-    elseif RUNTIME.osType == "Windows" then
-        -- Windows-specific installation
-        local windows_cmd = "<BACKEND> install-windows " .. tool .. "@" .. version .. " " .. install_path
-        cmd.exec(windows_cmd)
-    else
-        error("Unsupported platform: " .. RUNTIME.osType)
+    if not ubi_available then
+        error(installer.format_ubi_not_found_error())
     end
-    --]]
 
+    -- retrieve GitHub token from 1Password, operation takes ~1 second
+    -- NOTE: even if we just fetched versions (which also got the token),
+    -- we need to get it again here because that was in a different hook invocation
+    -- The token is never cached on disk per security reasons
+    local github_token = credentials.get_github_token_safe()
+
+    -- create the installation directory structure
+    -- mise expects tools to have a bin/ subdirectory containing executables
+    local bin_path = file.join_path(ctx.install_path, "bin")
+    cmd.exec("mkdir -p '" .. bin_path .. "'")
+
+    -- attempt installation with version tag
+    -- GoReleaser and most GitHub releases use 'v' prefix (v1.2.3)
+    -- Try with 'v' prefix first (common case), then without if that fails
+    local success, result, version_tag = installer.try_ubi_install(repo, "v" .. ctx.version, bin_path, github_token)
+
+    if not success then
+        -- fallback: try without 'v' prefix for repos that don't use it
+        success, result, version_tag = installer.try_ubi_install(repo, ctx.version, bin_path, github_token)
+    end
+
+    -- check if ubi succeeded
+    if not success then
+        error(installer.format_install_error(repo, ctx.version, result))
+    end
+
+    -- verify that installation actually created files in bin/
+    -- This catches cases where ubi succeeded but didn't place any binaries
+    local verify_cmd = "[ -d '" .. bin_path .. "' ] && [ -n \"$(ls -A '" .. bin_path .. "' 2>/dev/null)\" ]"
+    local has_binaries = pcall(function()
+        cmd.exec(verify_cmd)
+    end)
+
+    if not has_binaries then
+        error(installer.format_verification_error(repo, bin_path, version_tag))
+    end
+
+    -- installation successful
+    -- return empty table to indicate success to mise
     return {}
 end
