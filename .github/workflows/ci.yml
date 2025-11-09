@@ -15,7 +15,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@be3be2260bc02bc3fbf94c5e2fed8b7964baf074 # v3
       - run: mise run ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
