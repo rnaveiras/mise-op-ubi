@@ -166,7 +166,7 @@ mise install
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MISE_OP_UBI_GITHUB_TOKEN_REFERENCE` | `op://Private/GitHub-CLI/token` | 1Password reference path for GitHub token |
+| `MISE_OP_UBI_GITHUB_TOKEN_REFERENCE` | (required) | 1Password reference path for GitHub token |
 | `MISE_OP_UBI_CACHE_DAYS` | `7` | Number of days to cache version lists |
 | `MISE_OP_UBI_FORCE_REFRESH` | `false` | Force cache refresh (bypass cache) |
 | `MISE_OP_UBI_ACCOUNT` | - | Plugin-specific 1Password account name (overrides `OP_ACCOUNT`) |
