@@ -82,7 +82,7 @@ When using mise's built-in `ubi` backend with private GitHub repositories, you m
 2. **[1Password CLI](https://developer.1password.com/docs/cli/)** (`op`) - For credential management
 
    ```bash
-   mise install ubi:1Password/op
+   mise install aqua:1password/cli@v2.31.1
    ```
 
 3. **[ubi](https://github.com/houseabsolute/ubi)** - Universal Binary Installer
@@ -164,13 +164,13 @@ mise install
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MISE_OP_UBI_GITHUB_TOKEN_REFERENCE` | `op://Private/GitHub-CLI/token` | 1Password reference path for GitHub token |
-| `MISE_OP_UBI_CACHE_DAYS` | `7` | Number of days to cache version lists |
-| `MISE_OP_UBI_FORCE_REFRESH` | `false` | Force cache refresh (bypass cache) |
-| `MISE_OP_UBI_ACCOUNT` | - | Plugin-specific 1Password account name (overrides `OP_ACCOUNT`) |
-| `OP_ACCOUNT` | - | 1Password account name (for users with multiple accounts) |
+| Variable                             | Default                         | Description                                                     |
+| ------------------------------------ | ------------------------------- | --------------------------------------------------------------- |
+| `MISE_OP_UBI_GITHUB_TOKEN_REFERENCE` | `op://Private/GitHub-CLI/token` | 1Password reference path for GitHub token                       |
+| `MISE_OP_UBI_CACHE_DAYS`             | `7`                             | Number of days to cache version lists                           |
+| `MISE_OP_UBI_FORCE_REFRESH`          | `false`                         | Force cache refresh (bypass cache)                              |
+| `MISE_OP_UBI_ACCOUNT`                | -                               | Plugin-specific 1Password account name (overrides `OP_ACCOUNT`) |
+| `OP_ACCOUNT`                         | -                               | 1Password account name (for users with multiple accounts)       |
 
 ### Tool Specification Format
 

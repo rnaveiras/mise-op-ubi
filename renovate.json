@@ -1,9 +1,21 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "github>rnaveiras/.github:renovate.json"
+    "github>rnaveiras/.github:renovate.json",
+    "config:best-practices",
+    ":semanticcommits"
+  ],
+  "pre-commit": {
+    "enabled": true
+  },
+  "schedule": [
+    "before 9am on saturday"
   ],
   "reviewers": [
     "rnaveiras"
-  ]
+  ],
+  "timezone": "europe/london",
+  "prhourlylimit": 5,
+  "prconcurrentlimit": 10,
+  "dependencydashboard": true
 }
