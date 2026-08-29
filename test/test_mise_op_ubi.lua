@@ -22,12 +22,34 @@ function assert_equal(actual, expected, message)
     end
 end
 
+-- string.match returns the matched substring rather than a boolean, so these
+-- test lua truthiness instead of comparing against `true`/`false` themselves
 function assert_true(condition, message)
-    return assert_equal(condition, true, message)
+    test_count = test_count + 1
+    if condition then
+        pass_count = pass_count + 1
+        print("✓ " .. message)
+        return true
+    end
+    fail_count = fail_count + 1
+    print("✗ " .. message)
+    print("  Expected: truthy value")
+    print("  Actual:   " .. tostring(condition))
+    return false
 end
 
 function assert_false(condition, message)
-    return assert_equal(condition, false, message)
+    test_count = test_count + 1
+    if not condition then
+        pass_count = pass_count + 1
+        print("✓ " .. message)
+        return true
+    end
+    fail_count = fail_count + 1
+    print("✗ " .. message)
+    print("  Expected: falsy value")
+    print("  Actual:   " .. tostring(condition))
+    return false
 end
 
 function assert_not_nil(value, message)
@@ -63,6 +85,33 @@ function run_test_suite(name, tests)
     end
 end
 
+-- Run fn with MISE_OP_UBI_GITHUB_TOKEN_REFERENCE forced to `value` (nil to
+-- unset). os.execute spawns a subshell, so an `export` there cannot reach this
+-- process — os.getenv has to be stubbed instead. Restored via pcall so a
+-- failing assertion still leaves the real environment intact.
+function with_env(value, fn)
+    local real_getenv = os.getenv
+    -- luacheck: push ignore 122
+    os.getenv = function(name)
+        if name == "MISE_OP_UBI_GITHUB_TOKEN_REFERENCE" then
+            return value
+        end
+        return real_getenv(name)
+    end
+
+    local ok, err = pcall(fn)
+
+    os.getenv = real_getenv
+    -- luacheck: pop
+
+    if not ok then
+        error(err, 0)
+    end
+end
+
+-- In-memory stand-in for the filesystem, keyed by path
+local mock_files = {}
+
 -- Mock implementations for testing without actual 1Password/GitHub access
 local mock_cmd = {
     exec = function(command, options)
@@ -84,6 +133,12 @@ local mock_cmd = {
 
         -- Mock cat command for reading cache
         if command:match("^cat") then
+            local path = command:match("^cat '([^']+)'")
+            -- a prior write in the same test wins, so write_json/read_json
+            -- round-trips instead of reading a fixture keyed on filename
+            if path and mock_files[path] then
+                return mock_files[path]
+            end
             if command:match("timestamp") then
                 return tostring(os.time())
             elseif command:match("versions%.json") then
@@ -93,6 +148,10 @@ local mock_cmd = {
 
         -- Mock echo command for writing cache
         if command:match("^echo") then
+            local content, path = command:match("^echo '(.*)' > '([^']+)'")
+            if path then
+                mock_files[path] = content
+            end
             return ""
         end
 
@@ -145,8 +204,14 @@ local mock_json = {
 
     decode = function(json_str)
         -- Simple JSON parsing for testing
-        if json_str == '["1.0.0","1.1.0","1.2.0"]' then
-            return { "1.0.0", "1.1.0", "1.2.0" }
+        -- a releases array is also an array, so this must be tested before the
+        -- flat-string branch below or every element decodes to a bare string
+        if json_str:match("tag_name") then
+            local result = {}
+            for tag in json_str:gmatch('"tag_name"%s*:%s*"([^"]+)"') do
+                table.insert(result, { tag_name = tag })
+            end
+            return result
         elseif json_str:match("^%[") then
             -- Parse array
             local result = {}
@@ -154,13 +219,6 @@ local mock_json = {
                 table.insert(result, item)
             end
             return result
-        elseif json_str:match("^%{.*tag_name") then
-            -- Parse GitHub API response
-            return {
-                { tag_name = "v1.0.0" },
-                { tag_name = "v1.1.0" },
-                { tag_name = "v1.2.0" },
-            }
         end
         return {}
     end,
@@ -239,20 +297,21 @@ local cache_tests = {
 -- Tests for credentials module
 local credentials_tests = {
     ["test_get_token_path_not_configured"] = function()
-        -- Clear environment variable
-        os.execute("unset MISE_OP_UBI_GITHUB_TOKEN_REFERENCE")
         local credentials = require("lib.credentials")
-        local success = pcall(function()
-            credentials.get_token_path()
+        with_env(nil, function()
+            local success = pcall(function()
+                credentials.get_token_path()
+            end)
+            assert_false(success, "Should error when token reference not configured")
         end)
-        assert_false(success, "Should error when token reference not configured")
     end,
 
     ["test_get_token_path_from_env"] = function()
-        os.execute("export MISE_OP_UBI_GITHUB_TOKEN_REFERENCE='op://Custom/Path/token'")
         local credentials = require("lib.credentials")
-        local path = credentials.get_token_path()
-        assert_true(path:match("Custom"), "Should use token path from environment")
+        with_env("op://Custom/Path/token", function()
+            local path = credentials.get_token_path()
+            assert_true(path:match("Custom"), "Should use token path from environment")
+        end)
     end,
 
     ["test_check_op_available"] = function()
@@ -264,9 +323,11 @@ local credentials_tests = {
 
     ["test_get_github_token"] = function()
         local credentials = require("lib.credentials")
-        local token = credentials.get_github_token()
-        assert_not_nil(token, "GitHub token should be retrieved")
-        assert_true(#token > 10, "Token should have reasonable length")
+        with_env("op://Test/GitHub/token", function()
+            local token = credentials.get_github_token()
+            assert_not_nil(token, "GitHub token should be retrieved")
+            assert_true(#token > 10, "Token should have reasonable length")
+        end)
     end,
 }
 
@@ -306,7 +367,7 @@ local integration_tests = {
         dofile("../hooks/backend_list_versions.lua")
 
         local ctx = {
-            tool = "owner/repo",  -- mise strips the backend prefix
+            tool = "owner/repo", -- mise strips the backend prefix
             version = "1.1.0",
         }
 
@@ -323,14 +384,17 @@ local integration_tests = {
         dofile("../hooks/backend_install.lua")
 
         local ctx = {
-            tool = "owner/repo",  -- mise strips the backend prefix
+            tool = "owner/repo", -- mise strips the backend prefix
             version = "1.2.0",
             install_path = "/tmp/test-install",
         }
 
         -- Should complete without error in mock environment
-        local success, result = pcall(function()
-            return PLUGIN:BackendInstall(ctx)
+        local success, result
+        with_env("op://Test/GitHub/token", function()
+            success, result = pcall(function()
+                return PLUGIN:BackendInstall(ctx)
+            end)
         end)
         assert_true(success, "Installation should succeed: " .. tostring(result))
     end,

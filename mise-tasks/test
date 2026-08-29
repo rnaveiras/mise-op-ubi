@@ -2,6 +2,11 @@
 #MISE description="Run backend plugin tests - test plugin linking and basic functionality"
 set -euo pipefail
 
+# The unit suite is the part that gates CI; the smoke checks below reach the
+# network and only warn. Runs from test/ because it resolves siblings via ../
+echo "Running unit test suite..."
+(cd test && LUA_PATH="../?.lua;./?.lua;;" lua test_mise_op_ubi.lua)
+
 # Link the plugin for testing
 mise plugin link --force op-ubi .
 
