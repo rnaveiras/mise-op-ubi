@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  // Everything else — schedule, timezone, PR limits, dashboard, pre-commit —
+  // comes from the shared preset; restating it here only invites drift.
+  "extends": [
+    "github>rnaveiras/.github:renovate.json5"
+  ],
+  "reviewers": [
+    "rnaveiras"
+  ]
+}
